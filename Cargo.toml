@@ -8,7 +8,7 @@ edition = "2018"
 crate-type = ["cdylib"]
 
 [dependencies]
+#suricata = { path = "../suricata/review/rust", package = "suricata" }
+suricata = { version = "7.0.0-alpha", package = "suricata" }
 anyhow = "1.0.40"
 redis = { version = "0.20.1" }
-#suricata = "7.0.0-dev"
-suricata = { path = "../suricata/review/rust", package = "suricata" }
