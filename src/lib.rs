@@ -29,8 +29,8 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::str::FromStr;
 use std::sync::mpsc::TrySendError;
 use std::sync::Mutex;
-use suricata_rust::conf::ConfNode;
-use suricata_rust::SCLogError;
+use suricata::conf::ConfNode;
+use suricata::SCLogError;
 
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: &str = "6379";
@@ -308,7 +308,7 @@ unsafe extern "C" fn init_plugin() {
 #[no_mangle]
 extern "C" fn SCPluginRegister() -> *const ffi::SCPlugin {
     // Some necessary bootstrapping of the Rust address space.
-    suricata_rust::plugin::init();
+    suricata::plugin::init();
 
     // Return our plugin declaration.
     ffi::SCPlugin::new("Redis Eve Filetype", "GPL-2.0", "Jason Ish", init_plugin)
