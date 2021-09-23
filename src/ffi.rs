@@ -20,6 +20,8 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
+/// Helper module for this plugin to provide better interfaces to the C API.
+/// This will become part of the Suricata dependency crate at some point.
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::str::Utf8Error;
@@ -49,63 +51,49 @@ impl SCPlugin {
             author: author.into_raw(),
             init: init_fn,
         };
-        return Box::into_raw(Box::new(plugin));
+        Box::into_raw(Box::new(plugin))
     }
 }
 
-pub type InitFn =
-    unsafe extern "C" fn(conf: *const c_void, threaded: bool, init_data: *mut *mut c_void) -> c_int;
+pub type OpenFn = unsafe extern "C" fn(conf: *const c_void, init_data: *mut *mut c_void) -> c_int;
+pub type CloseFn = unsafe extern "C" fn(init_data: *const c_void);
 pub type WriteFn = unsafe extern "C" fn(
     buffer: *const c_char,
     buffer_len: c_int,
     init_data: *const c_void,
-    thread_data: *const c_void,
 ) -> c_int;
-pub type DeinitFn = extern "C" fn(init_data: *const c_void);
-pub type ThreadInitFn = unsafe extern "C" fn(
-    init_data: *const c_void,
-    thread_id: c_int,
-    thread_data: *mut *mut c_void,
-) -> c_int;
-pub type ThreadDeinitFn =
-    unsafe extern "C" fn(init_data: *const c_void, thread_data: *const c_void);
 
 #[repr(C)]
 #[allow(non_snake_case)]
-pub struct SCEveFileType {
+pub struct SCPluginFileType {
     pub name: *const c_char,
-    pub Init: InitFn,
-    pub Write: Option<WriteFn>,
-    pub Deinit: Option<DeinitFn>,
-    pub ThreadInit: Option<ThreadInitFn>,
-    pub ThreadDeinit: Option<ThreadDeinitFn>,
+    pub open: OpenFn,
+    pub write: WriteFn,
+    pub close: CloseFn,
+
+    // Pad for the TAILQ datastructure. This will not be required in 7.0.
+    pad0: usize,
+    pad1: usize,
 }
 
-impl SCEveFileType {
-    pub fn new(
-        name: &str,
-        init: InitFn,
-        deinit: Option<DeinitFn>,
-        thread_init: Option<ThreadInitFn>,
-        thread_deinit: Option<ThreadDeinitFn>,
-        write: Option<WriteFn>,
-    ) -> *const Self {
+impl SCPluginFileType {
+    pub fn new(name: &str, open: OpenFn, close: CloseFn, write: WriteFn) -> *const Self {
         // Convert the name to C and forget.
         let name = CString::new(name).unwrap().into_raw();
-        let file_type = SCEveFileType {
-            name: name,
-            Init: init,
-            Write: write,
-            Deinit: deinit,
-            ThreadInit: thread_init,
-            ThreadDeinit: thread_deinit,
+        let file_type = SCPluginFileType {
+            name,
+            open,
+            close,
+            write,
+            pad0: 0,
+            pad1: 0,
         };
         Box::into_raw(Box::new(file_type))
     }
 }
 
 extern "C" {
-    pub fn SCRegisterEveFileType(filetype: *const SCEveFileType) -> bool;
+    pub fn SCPluginRegisterFileType(filetype: *const SCPluginFileType) -> bool;
 }
 
 // Convert a C string with a provided length to a Rust &str.
