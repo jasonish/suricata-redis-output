@@ -1,9 +1,45 @@
-# Suricata Eve Redis Output Plugin for 7.0.0-dev
+# Suricata Eve Redis Output Plugin for Suricata 7.0.0-dev
 
-If looking for a Redis output plugin or Rust example output plugin for Suricata
-6.0, see the 6.0 branch:
-https://github.com/jasonish/suricata-redis-output/tree/6.0.
+Note: If using Suricata 6.0.x then look at the 6.0 branch of this repository as
+the plugins are not compatible between non-patch release versions of Suricata:
+https://github.com/jasonish/suricata-redis-output/tree/6.0
 
-This plugin provides a Suricata Eve output filetype for Redis. Its primary use
-replacement for the built-in Redis output which is easier to modify/customize if
-needed.
+This plugin provides a Suricata Eve output for Redis. It also serves as an
+example of how an output plugin that writes to a possibly slow resource like the
+network can operate without blocking Suricata.
+
+This plugin can replace the built-in Redis output, but a performance comparison
+has not been done.
+
+## Building
+
+```
+git clone https://github.com/jasonish/suricata-redis-output
+cd suricata-redis-output
+cargo build --release
+```
+
+## Installing
+
+As there is no standard way (yet) to install Suricata plugins we'll install the
+plugin to `/usr/local/lib/suricata/plugins`.
+
+```
+mkdir -p /usr/local/lib/suricata/plugins
+cp target/release/libredis_output.so /usr/local/lib/suricata/plugins/
+```
+
+Add a section to your `suricata.yaml` that looks like:
+
+```
+plugins:
+  - /usr/local/lib/suricata/plugins/libredis_output.so
+```
+
+Then set the `filetype` in your `eve` configuration section to
+`eve-redis-plugin`.
+
+## Configuration
+
+This Redis output is compatible with the existing configuration in
+`suricata.yaml`.

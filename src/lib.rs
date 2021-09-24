@@ -20,27 +20,32 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 // DEALINGS IN THE SOFTWARE.
 
-#![allow(clippy::needless_return)]
-#![allow(clippy::redundant_field_names)]
+// FFI helpers. This will be removed when these helpers get added to the
+// Suricata rust code (where they belong).
 mod ffi;
 
 use redis::Commands;
 use std::os::raw::{c_char, c_int, c_void};
 use std::str::FromStr;
 use std::sync::mpsc::TrySendError;
-use std::sync::Mutex;
+use std::thread;
+use std::time::Duration;
 use suricata::conf::ConfNode;
-use suricata::SCLogError;
+use suricata::{SCLogError, SCLogNotice};
 
+// Default configuration values.
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: &str = "6379";
 const DEFAULT_KEY: &str = "suricata";
 const DEFAULT_MODE: &str = "lpush";
 const DEFAULT_BUFFER_SIZE: &str = "1000";
 
+// Default timeout for connect/read/write.
+const DEFAULT_TIMEOUT: u64 = 6;
+
 #[derive(Debug, Clone)]
 enum Mode {
-    // Left push (also list)
+    // Left push (aka list), the default.
     Lpush,
     // Right push
     Rpush,
@@ -70,6 +75,18 @@ struct Config {
     buffer: usize,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server: DEFAULT_HOST.into(),
+            port: DEFAULT_PORT.parse().unwrap(),
+            buffer: DEFAULT_PORT.parse().unwrap(),
+            key: DEFAULT_KEY.into(),
+            mode: Mode::from_str(DEFAULT_MODE).unwrap(),
+        }
+    }
+}
+
 impl Config {
     fn new(conf: &ConfNode) -> anyhow::Result<Self> {
         let server = conf.get_child_value("server").unwrap_or(DEFAULT_HOST);
@@ -94,222 +111,208 @@ impl Config {
         let mode = Mode::from_str(conf.get_child_value("mode").unwrap_or(DEFAULT_MODE))?;
         let config = Config {
             server: server.into(),
-            port: port,
+            port,
             key: key.into(),
-            mode: mode,
+            mode,
             buffer: buffer_size,
         };
         Ok(config)
     }
 }
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            server: DEFAULT_HOST.into(),
-            port: DEFAULT_PORT.parse().unwrap(),
-            buffer: DEFAULT_PORT.parse().unwrap(),
-            key: DEFAULT_KEY.into(),
-            mode: Mode::from_str(DEFAULT_MODE).unwrap(),
-        }
-    }
-}
-
-// The writer is what sends the Eve records to Redis and maintains the connection to Redis.
-//
-// The writer runs in its own thread waiting on a channel for new records to send to Redis.
-struct Writer {
-    config: Config,
+struct Redis {
     client: redis::Client,
+    config: Config,
     rx: std::sync::mpsc::Receiver<String>,
+    count: usize,
 }
 
-impl Writer {
-    fn new(config: Config, rx: std::sync::mpsc::Receiver<String>) -> anyhow::Result<Self> {
+impl Redis {
+    fn new(
+        config: Config,
+        rx: std::sync::mpsc::Receiver<String>,
+    ) -> Result<Self, redis::RedisError> {
         let uri = format!("redis://{}:{}", config.server, config.port);
         let client = redis::Client::open(uri)?;
-        Ok(Self { config, client, rx })
+        Ok(Self {
+            config,
+            client,
+            rx,
+            count: 0,
+        })
+    }
+
+    fn open_connection(&self) -> Result<redis::Connection, redis::RedisError> {
+        let timeout = std::time::Duration::from_secs(DEFAULT_TIMEOUT);
+        let conn = self.client.get_connection_with_timeout(timeout)?;
+        conn.set_read_timeout(Some(timeout))?;
+        conn.set_write_timeout(Some(timeout))?;
+        Ok(conn)
+    }
+
+    fn submit(
+        &self,
+        connection: &mut redis::Connection,
+        buf: &str,
+    ) -> Result<u32, redis::RedisError> {
+        match self.config.mode {
+            Mode::Lpush => connection.lpush(&self.config.key, buf),
+            Mode::Rpush => connection.rpush(&self.config.key, buf),
+            Mode::Publish => connection.publish(&self.config.key, buf),
+        }
     }
 
     fn run(&mut self) {
-        // TODO: Enter reconnection loop on start in case Redis isn't ready. Also, on write
-        //  error, re-enter reconnection loop.
-        let mut conn = self.client.get_connection().unwrap();
-        loop {
-            let record = match self.rx.recv() {
-                Ok(record) => record,
-                Err(_) => {
-                    // This will only happen if the sending side of our channel is closed, which
-                    // happens on shutdown which is our notification to stop this loop.
-                    return;
+        // Get a peekable iterator from the incoming channel. This allows us to
+        // get the next message from the channel without removing it, we can
+        // then remove it once its been sent to the server without error.
+        //
+        // Not sure how this will work with pipe-lining tho, will probably have
+        // to do some buffering here, or just accept that any log records
+        // in-flight will be lost.
+        let mut iter = self.rx.iter().peekable();
+        'connection: loop {
+            SCLogNotice!("Opening Redis connection");
+            let mut connection = match self.open_connection() {
+                Err(err) => {
+                    SCLogError!("Failed to open Redis connection: {:?}", err);
+                    thread::sleep(Duration::from_secs(DEFAULT_TIMEOUT));
+                    continue;
                 }
+                Ok(connection) => connection,
             };
-            if let Err(err) = self.write(&mut conn, &record) {
-                SCLogError!("Failed to write eve record to Redis: {}", err);
+            SCLogNotice!("Redis conneciton opened");
+
+            loop {
+                if let Some(buf) = iter.peek() {
+                    self.count += 1;
+                    if let Err(err) = self.submit(&mut connection, buf) {
+                        SCLogError!("Failed to send event to Redis: {:?}", err);
+                        break;
+                    } else {
+                        // Successfully sent.  Pop it off the channel.
+                        let _ = iter.next();
+                    }
+                } else {
+                    break 'connection;
+                }
             }
         }
+        SCLogNotice!("Redis connecton finished: count={}", self.count,);
+    }
+}
 
-        // We should never get here. If we exit the loop the sending side will fail and panic.
-        #[allow(unreachable_code)]
-        {
-            panic!("entered unreachable code: code error");
+struct Context {
+    tx: std::sync::mpsc::SyncSender<String>,
+    count: usize,
+    dropped: usize,
+}
+
+unsafe extern "C" fn output_init(
+    conf: *const c_void,
+    threaded: bool,
+    init_data: *mut *mut c_void,
+) -> c_int {
+    if threaded {
+        SCLogError!("This Redis output plugin does not support threaded EVE yet");
+        panic!()
+    }
+
+    // Load configuration.
+    let config = if conf.is_null() {
+        Config::default()
+    } else {
+        Config::new(&ConfNode::wrap(conf)).unwrap()
+    };
+
+    let (tx, rx) = std::sync::mpsc::sync_channel(config.buffer);
+
+    let mut redis_client = match Redis::new(config, rx) {
+        Ok(client) => client,
+        Err(err) => {
+            SCLogError!("Failed to initialize Redis client: {:?}", err);
+            panic!()
         }
-    }
+    };
 
-    fn write(
-        &mut self,
-        conn: &mut redis::Connection,
-        record: &str,
-    ) -> Result<u32, redis::RedisError> {
-        match self.config.mode {
-            Mode::Lpush => conn.lpush(&self.config.key, record),
-            Mode::Rpush => conn.rpush(&self.config.key, record),
-            Mode::Publish => conn.publish(&self.config.key, record),
-        }
-    }
+    let context = Context {
+        tx,
+        count: 0,
+        dropped: 0,
+    };
+    std::thread::spawn(move || redis_client.run());
+
+    *init_data = Box::into_raw(Box::new(context)) as *mut _;
+    0
 }
 
-struct FileType {
-    tx: Mutex<std::sync::mpsc::SyncSender<String>>,
+unsafe extern "C" fn output_close(init_data: *const c_void) {
+    let context = Box::from_raw(init_data as *mut Context);
+    SCLogNotice!(
+        "Redis output finished: count={}, dropped={}",
+        context.count,
+        context.dropped
+    );
+    std::mem::drop(context);
 }
 
-impl FileType {
-    fn write(&self, record: &str) -> Result<(), TrySendError<String>> {
-        // When not in threaded we may still be called from multiple threads, so we have to take
-        // care of locking ourselves.
-        let tx = self.tx.lock().unwrap();
-        tx.try_send(record.to_string())
-    }
-}
-
-unsafe extern "C" fn do_write(
+unsafe extern "C" fn output_write(
     buffer: *const c_char,
     buffer_len: c_int,
     init_data: *const c_void,
-    thread_data: *const c_void,
+    _thread_data: *const c_void,
 ) -> c_int {
-    let init_data = &mut *(init_data as *mut FileType);
-    let thread_state = if thread_data.is_null() {
-        None
-    } else {
-        Some(&mut *(thread_data as *mut ThreadState))
-    };
-
+    let context = &mut *(init_data as *mut Context);
     let buf = if let Ok(buf) = ffi::str_from_c_parts(buffer, buffer_len) {
         buf
     } else {
         return -1;
     };
 
-    let result = if let Some(thread_state) = thread_state {
-        thread_state.write(buf)
-    } else {
-        init_data.write(buf)
-    };
-    match result {
-        Err(TrySendError::Disconnected(_)) => {
-            // The thread the sends messages to Redis has crashed. This is an unrecoverable error.
-            panic!("Failed to send Eve record to Redis writer channel: disconnected");
-        }
-        Err(TrySendError::Full(_)) => {
-            // The internal buffer is full.
-            //
-            // TODO: Some rate limited error logging would be useful here.
-            SCLogError!("Redis channel full, event record lost");
-            return -1;
-        }
-        Ok(_) => {
-            return 0;
+    context.count += 1;
+
+    if let Err(err) = context.tx.try_send(buf.to_string()) {
+        context.dropped += 1;
+        match err {
+            TrySendError::Full(_) => {
+                SCLogError!("Eve record lost due to full buffer");
+            }
+            TrySendError::Disconnected(_) => {
+                SCLogError!("Eve record lost due to broken channel");
+            }
         }
     }
+    0
 }
 
-unsafe extern "C" fn init_filetype(
-    conf: *const c_void,
-    _threaded: bool,
-    init_data: *mut *mut c_void,
+// Not used yet.
+unsafe extern "C" fn output_thread_init(
+    _init_data: *const c_void,
+    _thread_id: std::os::raw::c_int,
+    _thread_data: *mut *mut c_void,
 ) -> c_int {
-    let config = if let Some(config) = ConfNode::wrap(conf).get_child("redis") {
-        Config::new(&config).unwrap()
-    } else {
-        Config::default()
-    };
-
-    let (tx, rx) = std::sync::mpsc::sync_channel::<String>(1000);
-    let data = FileType { tx: Mutex::new(tx) };
-    let x = Box::into_raw(Box::new(data));
-    *init_data = x as *mut c_void;
-
-    let mut writer = Writer::new(config, rx).unwrap();
-    std::thread::spawn(move || {
-        writer.run();
-    });
-
-    return 0;
+    0
 }
 
-// Deinitialize, or "close" this file type. As this is Rust, we just take back ownership of the
-// FileType and drop it.
-extern "C" fn deinit_filetype(init_data: *const c_void) {
-    unsafe {
-        let filetype = &mut *(init_data as *mut FileType);
-        let filetype: Box<FileType> = Box::from_raw(filetype);
-        std::mem::drop(filetype);
-    }
-}
+// Not used yet.
+unsafe extern "C" fn output_thread_deinit(_init_data: *const c_void, _thread_data: *mut c_void) {}
 
-struct ThreadState {
-    tx: std::sync::mpsc::SyncSender<String>,
-}
-
-impl ThreadState {
-    fn write(&self, record: &str) -> Result<(), TrySendError<String>> {
-        // Unlike the writer on the FileType we do not need to lock here and Suricata ensures
-        // only one write per thread.
-        //self.tx.send(record.to_string())
-        self.tx.try_send(record.to_string())
-    }
-}
-
-unsafe extern "C" fn thread_init(
-    init_data: *const c_void,
-    _thread_id: c_int,
-    thread_data: *mut *mut c_void,
-) -> c_int {
-    let file_type = &*(init_data as *const FileType);
-    let tx = file_type.tx.lock().unwrap().clone();
-    let thread_state = ThreadState { tx };
-    *thread_data = Box::into_raw(Box::new(thread_state)) as *mut c_void;
-    return 0;
-}
-
-unsafe extern "C" fn thread_deinit(_init_data: *const c_void, thread_data: *const c_void) {
-    let thread_state = &mut *(thread_data as *mut ThreadState);
-    let thread_state: Box<ThreadState> = Box::from_raw(thread_state);
-    std::mem::drop(thread_state);
-}
-
-// Plugin initialization. This is called by Suricata after receiving the plugin declaration. Here
-// we register a new Eve file type.
 unsafe extern "C" fn init_plugin() {
     let file_type = ffi::SCEveFileType::new(
-        "rust-redis",
-        init_filetype,
-        Some(deinit_filetype),
-        Some(thread_init),
-        Some(thread_deinit),
-        Some(do_write),
+        "eve-redis-plugin",
+        output_init,
+        output_close,
+        output_write,
+        output_thread_init,
+        output_thread_deinit,
     );
     ffi::SCRegisterEveFileType(file_type);
 }
 
-// Register's this module as a plugin. This is the function that Suricata will look for after
-// loading the plugin.
 #[no_mangle]
 extern "C" fn SCPluginRegister() -> *const ffi::SCPlugin {
-    // Some necessary bootstrapping of the Rust address space.
+    // Rust plugins need to initialize some Suricata internals so stuff like logging works.
     suricata::plugin::init();
 
-    // Return our plugin declaration.
+    // Register our plugin.
     ffi::SCPlugin::new("Redis Eve Filetype", "GPL-2.0", "Jason Ish", init_plugin)
 }
