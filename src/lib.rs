@@ -27,8 +27,10 @@ mod ffi;
 use redis::Commands;
 use std::os::raw::{c_char, c_int, c_void};
 use std::str::FromStr;
-use std::sync::mpsc::TrySendError;
-use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{SyncSender, TrySendError};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use suricata::conf::ConfNode;
 use suricata::{SCLogError, SCLogNotice};
@@ -124,12 +126,14 @@ struct Redis {
     config: Config,
     rx: std::sync::mpsc::Receiver<String>,
     count: usize,
+    done: Arc<AtomicBool>,
 }
 
 impl Redis {
     fn new(
         config: Config,
         rx: std::sync::mpsc::Receiver<String>,
+        done: Arc<AtomicBool>,
     ) -> Result<Self, redis::RedisError> {
         let uri = format!("redis://{}:{}", config.server, config.port);
         let client = redis::Client::open(uri)?;
@@ -138,6 +142,7 @@ impl Redis {
             client,
             rx,
             count: 0,
+            done,
         })
     }
 
@@ -170,11 +175,16 @@ impl Redis {
         // to do some buffering here, or just accept that any log records
         // in-flight will be lost.
         let mut iter = self.rx.iter().peekable();
-        'connection: loop {
+        'connection: while !self.done.load(Ordering::Relaxed) {
             SCLogNotice!("Opening Redis connection");
             let mut connection = match self.open_connection() {
                 Err(err) => {
                     SCLogError!("Failed to open Redis connection: {:?}", err);
+                    // Check if we're done. This is required to exit cleanly if we exit
+                    // while in the reconnect loop.
+                    if self.done.load(Ordering::Relaxed) {
+                        break;
+                    }
                     thread::sleep(Duration::from_secs(DEFAULT_TIMEOUT));
                     continue;
                 }
@@ -182,29 +192,81 @@ impl Redis {
             };
             SCLogNotice!("Redis conneciton opened");
 
-            loop {
-                if let Some(buf) = iter.peek() {
-                    self.count += 1;
-                    if let Err(err) = self.submit(&mut connection, buf) {
-                        SCLogError!("Failed to send event to Redis: {:?}", err);
-                        break;
-                    } else {
-                        // Successfully sent.  Pop it off the channel.
-                        let _ = iter.next();
-                    }
-                } else {
-                    break 'connection;
+            while let Some(buf) = iter.peek() {
+                self.count += 1;
+                if let Err(err) = self.submit(&mut connection, buf) {
+                    SCLogError!("Failed to send event to Redis: {:?}", err);
+                    continue 'connection;
                 }
+                let _ = iter.next();
             }
+
+            // Incoming channel has been closed, we must have entered shutdown.
+            break;
         }
-        SCLogNotice!("Redis connecton finished: count={}", self.count,);
+
+        // Count how many events are lost. This should only happen if Suricata
+        // was told to exit while the Redis output was in a reconnecting mode.
+        let mut lost = 0;
+        while self.rx.try_recv().is_ok() {
+            lost += 1;
+        }
+
+        SCLogNotice!(
+            "Redis connecton finished: count={}, lost={}",
+            self.count,
+            lost
+        );
     }
 }
 
 struct Context {
-    tx: std::sync::mpsc::SyncSender<String>,
+    tx: SyncSender<String>,
+    thread: Option<ThreadContext>,
+    th: JoinHandle<()>,
+    done: Arc<AtomicBool>,
+}
+
+struct ThreadContext {
+    thread_id: usize,
+    tx: SyncSender<String>,
     count: usize,
     dropped: usize,
+}
+
+impl ThreadContext {
+    fn new(thread_id: usize, tx: SyncSender<String>) -> Self {
+        Self {
+            thread_id,
+            tx,
+            count: 0,
+            dropped: 0,
+        }
+    }
+
+    fn send(&mut self, buf: &str) {
+        self.count += 1;
+        if let Err(err) = self.tx.try_send(buf.to_string()) {
+            self.dropped += 1;
+            match err {
+                TrySendError::Full(_) => {
+                    SCLogError!("Eve record lost due to full buffer");
+                }
+                TrySendError::Disconnected(_) => {
+                    SCLogError!("Eve record lost due to broken channel");
+                }
+            }
+        }
+    }
+
+    fn log_exit_stats(&self) {
+        SCLogNotice!(
+            "Redis output finished: thread={}, count={}, dropped={}",
+            self.thread_id,
+            self.count,
+            self.dropped
+        );
+    }
 }
 
 unsafe extern "C" fn output_init(
@@ -212,21 +274,20 @@ unsafe extern "C" fn output_init(
     threaded: bool,
     init_data: *mut *mut c_void,
 ) -> c_int {
-    if threaded {
-        SCLogError!("This Redis output plugin does not support threaded EVE yet");
-        panic!()
-    }
-
     // Load configuration.
     let config = if conf.is_null() {
         Config::default()
     } else {
-        Config::new(&ConfNode::wrap(conf)).unwrap()
+        ConfNode::wrap(conf)
+            .get_child("redis")
+            .map(|conf| Config::new(&conf).unwrap())
+            .unwrap()
     };
 
     let (tx, rx) = std::sync::mpsc::sync_channel(config.buffer);
+    let done = Arc::new(AtomicBool::new(false));
 
-    let mut redis_client = match Redis::new(config, rx) {
+    let mut redis_client = match Redis::new(config, rx, done.clone()) {
         Ok(client) => client,
         Err(err) => {
             SCLogError!("Failed to initialize Redis client: {:?}", err);
@@ -234,12 +295,17 @@ unsafe extern "C" fn output_init(
         }
     };
 
+    let th = std::thread::spawn(move || redis_client.run());
     let context = Context {
-        tx,
-        count: 0,
-        dropped: 0,
+        tx: tx.clone(),
+        th,
+        thread: if threaded {
+            None
+        } else {
+            Some(ThreadContext::new(1, tx))
+        },
+        done,
     };
-    std::thread::spawn(move || redis_client.run());
 
     *init_data = Box::into_raw(Box::new(context)) as *mut _;
     0
@@ -247,54 +313,62 @@ unsafe extern "C" fn output_init(
 
 unsafe extern "C" fn output_close(init_data: *const c_void) {
     let context = Box::from_raw(init_data as *mut Context);
-    SCLogNotice!(
-        "Redis output finished: count={}, dropped={}",
-        context.count,
-        context.dropped
-    );
-    std::mem::drop(context);
+    context.done.store(true, Ordering::Relaxed);
+    if let Some(thread) = context.thread {
+        thread.log_exit_stats();
+    }
+
+    // Need to drop the transmit side of the channel before waiting for the
+    // Redis thread to finish.
+    std::mem::drop(context.tx);
+
+    // Wait for Redis thread to finish.
+    let _ = context.th.join();
 }
 
 unsafe extern "C" fn output_write(
     buffer: *const c_char,
     buffer_len: c_int,
     init_data: *const c_void,
-    _thread_data: *const c_void,
+    thread_data: *const c_void,
 ) -> c_int {
     let context = &mut *(init_data as *mut Context);
+
+    // If thread_data is null then we're setup for single threaded mode, and use
+    // the default thread context.
+    let thread_context = if thread_data.is_null() {
+        context.thread.as_mut().unwrap()
+    } else {
+        &mut *(thread_data as *mut ThreadContext)
+    };
+
+    // Convert the C string to a Rust string.
     let buf = if let Ok(buf) = ffi::str_from_c_parts(buffer, buffer_len) {
         buf
     } else {
         return -1;
     };
 
-    context.count += 1;
-
-    if let Err(err) = context.tx.try_send(buf.to_string()) {
-        context.dropped += 1;
-        match err {
-            TrySendError::Full(_) => {
-                SCLogError!("Eve record lost due to full buffer");
-            }
-            TrySendError::Disconnected(_) => {
-                SCLogError!("Eve record lost due to broken channel");
-            }
-        }
-    }
+    thread_context.send(buf);
     0
 }
 
-// Not used yet.
 unsafe extern "C" fn output_thread_init(
-    _init_data: *const c_void,
-    _thread_id: std::os::raw::c_int,
-    _thread_data: *mut *mut c_void,
+    init_data: *const c_void,
+    thread_id: std::os::raw::c_int,
+    thread_data: *mut *mut c_void,
 ) -> c_int {
+    let context = &mut *(init_data as *mut Context);
+    let thread_context = ThreadContext::new(thread_id as usize, context.tx.clone());
+    *thread_data = Box::into_raw(Box::new(thread_context)) as *mut _;
     0
 }
 
-// Not used yet.
-unsafe extern "C" fn output_thread_deinit(_init_data: *const c_void, _thread_data: *mut c_void) {}
+unsafe extern "C" fn output_thread_deinit(_init_data: *const c_void, thread_data: *mut c_void) {
+    let thread_context = Box::from_raw(thread_data as *mut ThreadContext);
+    thread_context.log_exit_stats();
+    std::mem::drop(thread_context);
+}
 
 unsafe extern "C" fn init_plugin() {
     let file_type = ffi::SCEveFileType::new(
