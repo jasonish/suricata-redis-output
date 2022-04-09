@@ -11,4 +11,4 @@ name = "redis_output"
 [dependencies]
 anyhow = "1.0.40"
 redis = {version = "0.21.2", default_features = false, features = []}
-suricata = {version = "6.0.3-alpha", package = "suricata"}
+suricata = {version = "6.0.4-alpha", package = "suricata"}
