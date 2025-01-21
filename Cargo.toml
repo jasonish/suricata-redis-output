@@ -1,6 +1,6 @@
 [package]
-authors = ["Jason Ish <jason.ish@oisf.net>"]
-edition = "2018"
+authors = ["Jason Ish <jish@oisf.net>"]
+edition = "2021"
 name = "suricata-redis-output"
 version = "0.1.0"
 
@@ -10,5 +10,5 @@ name = "redis_output"
 
 [dependencies]
 anyhow = "1.0.40"
-redis = {version = "0.21.2", default_features = false, features = []}
-suricata = {version = "7.0.0-alpha", package = "suricata"}
+redis = {version = "0.21.2", default-features = false, features = []}
+suricata = { version = "7.0.8" }

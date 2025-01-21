@@ -281,7 +281,7 @@ unsafe extern "C" fn output_init(
         ConfNode::wrap(conf)
             .get_child("redis")
             .map(|conf| Config::new(&conf).unwrap())
-            .unwrap()
+            .unwrap_or_default()
     };
 
     let (tx, rx) = std::sync::mpsc::sync_channel(config.buffer);

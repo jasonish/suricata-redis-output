@@ -1,8 +1,4 @@
-# Suricata Eve Redis Output Plugin for Suricata 7.0.0-dev
-
-Note: If using Suricata 6.0.x then look at the 6.0 branch of this repository as
-the plugins are not compatible between non-patch release versions of Suricata:
-https://github.com/jasonish/suricata-redis-output/tree/6.0
+# Suricata Eve Redis Output Plugin for Suricata 7.0.x
 
 This plugin provides a Suricata Eve output for Redis. It also serves as an
 example of how an output plugin that writes to a possibly slow resource like the
