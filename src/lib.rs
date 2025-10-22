@@ -225,7 +225,6 @@ impl Redis {
 
 struct Context {
     tx: SyncSender<String>,
-    thread: Option<ThreadContext>,
     th: JoinHandle<()>,
     done: Arc<AtomicBool>,
 }
@@ -274,7 +273,7 @@ impl ThreadContext {
 
 unsafe extern "C" fn output_init(
     conf: *const c_void,
-    threaded: bool,
+    _threaded: bool,
     init_data: *mut *mut c_void,
 ) -> c_int {
     // Load configuration.
@@ -302,11 +301,6 @@ unsafe extern "C" fn output_init(
     let context = Context {
         tx: tx.clone(),
         th,
-        thread: if threaded {
-            None
-        } else {
-            Some(ThreadContext::new(1, tx))
-        },
         done,
     };
 
@@ -317,9 +311,6 @@ unsafe extern "C" fn output_init(
 unsafe extern "C" fn output_close(init_data: *const c_void) {
     let context = Box::from_raw(init_data as *mut Context);
     context.done.store(true, Ordering::Relaxed);
-    if let Some(thread) = context.thread {
-        thread.log_exit_stats();
-    }
 
     // Need to drop the transmit side of the channel before waiting for the
     // Redis thread to finish.
@@ -332,18 +323,12 @@ unsafe extern "C" fn output_close(init_data: *const c_void) {
 unsafe extern "C" fn output_write(
     buffer: *const c_char,
     buffer_len: c_int,
-    init_data: *const c_void,
+    _init_data: *const c_void,
     thread_data: *const c_void,
 ) -> c_int {
-    let context = &mut *(init_data as *mut Context);
-
     // If thread_data is null then we're setup for single threaded mode, and use
     // the default thread context.
-    let thread_context = if thread_data.is_null() {
-        context.thread.as_mut().unwrap()
-    } else {
-        &mut *(thread_data as *mut ThreadContext)
-    };
+    let thread_context = &mut *(thread_data as *mut ThreadContext);
 
     // Convert the C string to a Rust string.
     let buf = if let Ok(buf) = ffi::str_from_c_parts(buffer, buffer_len) {
