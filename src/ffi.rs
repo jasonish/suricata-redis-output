@@ -48,10 +48,10 @@ pub type ThreadDeinitFn = unsafe extern "C" fn(init_data: *const c_void, thread_
 pub struct SCEveFileType {
     pub name: *const c_char,
     pub open: InitFn,
-    pub write: WriteFn,
-    pub close: DeinitFn,
     pub thread_init: ThreadInitFn,
+    pub write: WriteFn,
     pub thread_deinit: ThreadDeinitFn,
+    pub close: DeinitFn,
     pad: [usize; 2],
 }
 
