@@ -3,6 +3,9 @@ authors = ["Jason Ish <jish@oisf.net>"]
 edition = "2021"
 name = "suricata-redis-output"
 
+# Same as Suricata 8.
+rust-version = "1.75.0"
+
 # 0.8 for Suricata 8.0...
 version = "0.8.0"
 
