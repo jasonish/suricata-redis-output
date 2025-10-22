@@ -1,4 +1,4 @@
-# Suricata Eve Redis Output Plugin for Suricata 7.0.x
+# Suricata Eve Redis Output Plugin for Suricata 8.0.x
 
 This plugin provides a Suricata Eve output for Redis. It also serves as an
 example of how an output plugin that writes to a possibly slow resource like the
