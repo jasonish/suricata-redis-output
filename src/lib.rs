@@ -34,6 +34,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use suricata::conf::ConfNode;
 use suricata::{SCLogError, SCLogNotice};
+use suricata_sys::sys::SCConfNode;
 
 // Default configuration values.
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -278,8 +279,8 @@ unsafe extern "C" fn output_init(
     let config = if conf.is_null() {
         Config::default()
     } else {
-        ConfNode::wrap(conf)
-            .get_child("redis")
+        ConfNode::wrap(conf as *const SCConfNode)
+            .get_child_node("redis")
             .map(|conf| Config::new(&conf).unwrap())
             .unwrap_or_default()
     };

@@ -2,7 +2,9 @@
 authors = ["Jason Ish <jish@oisf.net>"]
 edition = "2021"
 name = "suricata-redis-output"
-version = "0.1.0"
+
+# 0.8 for Suricata 8.0...
+version = "0.8.0"
 
 [lib]
 crate-type = ["cdylib"]
@@ -10,5 +12,7 @@ name = "redis_output"
 
 [dependencies]
 anyhow = "1.0.40"
-redis = {version = "0.21.2", default-features = false, features = []}
-suricata = { version = "7.0.8" }
+redis = {version = "0.25", default-features = false, features = []}
+suricata = { version = "8.0.0" }
+suricata-sys = { version = "8.0.0" }
+url = "= 2.4.0"
