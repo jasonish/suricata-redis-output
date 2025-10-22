@@ -25,6 +25,7 @@
 mod ffi;
 
 use redis::Commands;
+use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,6 +36,7 @@ use std::time::Duration;
 use suricata::conf::ConfNode;
 use suricata::{SCLogError, SCLogNotice};
 use suricata_sys::sys::SCConfNode;
+use suricata_sys::sys::{SCPlugin, SC_API_VERSION, SC_PACKAGE_VERSION};
 
 // Default configuration values.
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -384,10 +386,19 @@ unsafe extern "C" fn init_plugin() {
 }
 
 #[no_mangle]
-extern "C" fn SCPluginRegister() -> *const ffi::SCPlugin {
-    // Rust plugins need to initialize some Suricata internals so stuff like logging works.
+extern "C" fn SCPluginRegister() -> *const SCPlugin {
     suricata::plugin::init();
 
-    // Register our plugin.
-    ffi::SCPlugin::new("Redis Eve Filetype", "GPL-2.0", "Jason Ish", init_plugin)
+    let plugin_version =
+        CString::new(env!("CARGO_PKG_VERSION")).unwrap().into_raw() as *const c_char;
+    let plugin = SCPlugin {
+        version: SC_API_VERSION,
+        suricata_version: SC_PACKAGE_VERSION.as_ptr() as *const c_char,
+        name: b"redis-output\0".as_ptr() as *const c_char,
+        plugin_version,
+        license: b"MIT\0".as_ptr() as *const c_char,
+        author: b"Jason Ish\0".as_ptr() as *const c_char,
+        Init: Some(init_plugin),
+    };
+    Box::into_raw(Box::new(plugin))
 }

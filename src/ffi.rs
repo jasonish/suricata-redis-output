@@ -27,34 +27,6 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::str::Utf8Error;
 
 // Rust representation of a C plugin.
-#[repr(C)]
-pub struct SCPlugin {
-    name: *const c_char,
-    license: *const c_char,
-    author: *const c_char,
-    init: unsafe extern "C" fn(),
-}
-
-impl SCPlugin {
-    pub fn new(
-        name: &str,
-        license: &str,
-        author: &str,
-        init_fn: unsafe extern "C" fn(),
-    ) -> *const Self {
-        let name = CString::new(name).unwrap();
-        let license = CString::new(license).unwrap();
-        let author = CString::new(author).unwrap();
-        let plugin = SCPlugin {
-            name: name.into_raw(),
-            license: license.into_raw(),
-            author: author.into_raw(),
-            init: init_fn,
-        };
-        Box::into_raw(Box::new(plugin))
-    }
-}
-
 pub type InitFn =
     unsafe extern "C" fn(conf: *const c_void, threaded: bool, init_data: *mut *mut c_void) -> c_int;
 pub type DeinitFn = unsafe extern "C" fn(init_data: *const c_void);
