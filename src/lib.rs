@@ -35,8 +35,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use suricata::conf::ConfNode;
 use suricata::{SCLogError, SCLogNotice};
-use suricata_sys::sys::SCConfNode;
-use suricata_sys::sys::{SCPlugin, SC_API_VERSION, SC_PACKAGE_VERSION};
+use suricata_sys::sys::{SCConfNode, SCPlugin, SC_API_VERSION, SC_PACKAGE_VERSION};
 
 // Default configuration values.
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -272,7 +271,7 @@ impl ThreadContext {
 }
 
 unsafe extern "C" fn output_init(
-    conf: *const c_void,
+    conf: *const SCConfNode,
     _threaded: bool,
     init_data: *mut *mut c_void,
 ) -> c_int {
@@ -280,7 +279,7 @@ unsafe extern "C" fn output_init(
     let config = if conf.is_null() {
         Config::default()
     } else {
-        ConfNode::wrap(conf as *const SCConfNode)
+        ConfNode::wrap(conf)
             .get_child_node("redis")
             .map(|conf| Config::new(&conf).unwrap())
             .unwrap_or_default()
@@ -308,7 +307,7 @@ unsafe extern "C" fn output_init(
     0
 }
 
-unsafe extern "C" fn output_close(init_data: *const c_void) {
+unsafe extern "C" fn output_close(init_data: *mut c_void) {
     let context = Box::from_raw(init_data as *mut Context);
     context.done.store(true, Ordering::Relaxed);
 
@@ -324,7 +323,7 @@ unsafe extern "C" fn output_write(
     buffer: *const c_char,
     buffer_len: c_int,
     _init_data: *const c_void,
-    thread_data: *const c_void,
+    thread_data: *mut c_void,
 ) -> c_int {
     // If thread_data is null then we're setup for single threaded mode, and use
     // the default thread context.
@@ -343,7 +342,7 @@ unsafe extern "C" fn output_write(
 
 unsafe extern "C" fn output_thread_init(
     init_data: *const c_void,
-    thread_id: std::os::raw::c_int,
+    thread_id: suricata_sys::sys::ThreadId,
     thread_data: *mut *mut c_void,
 ) -> c_int {
     let context = &mut *(init_data as *mut Context);
@@ -359,7 +358,7 @@ unsafe extern "C" fn output_thread_deinit(_init_data: *const c_void, thread_data
 }
 
 unsafe extern "C" fn init_plugin() {
-    let file_type = ffi::SCEveFileType::new(
+    let file_type = ffi::new_eve_filetype(
         "eve-redis-plugin",
         output_init,
         output_close,

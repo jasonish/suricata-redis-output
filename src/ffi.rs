@@ -26,61 +26,57 @@ use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::str::Utf8Error;
 
-// Rust representation of a C plugin.
-pub type InitFn =
-    unsafe extern "C" fn(conf: *const c_void, threaded: bool, init_data: *mut *mut c_void) -> c_int;
-pub type DeinitFn = unsafe extern "C" fn(init_data: *const c_void);
+use suricata_sys::sys::{SCConfNode, SCEveFileType, ThreadId};
+
+pub type InitFn = unsafe extern "C" fn(
+    conf: *const SCConfNode,
+    threaded: bool,
+    init_data: *mut *mut c_void,
+) -> c_int;
+
+pub type DeinitFn = unsafe extern "C" fn(init_data: *mut c_void);
+
 pub type WriteFn = unsafe extern "C" fn(
     buffer: *const c_char,
     buffer_len: c_int,
     init_data: *const c_void,
-    thread_data: *const c_void,
+    thread_data: *mut c_void,
 ) -> c_int;
+
 pub type ThreadInitFn = unsafe extern "C" fn(
     init_data: *const c_void,
-    thread_id: std::os::raw::c_int,
+    thread_id: ThreadId,
     thread_data: *mut *mut c_void,
 ) -> c_int;
+
 pub type ThreadDeinitFn = unsafe extern "C" fn(init_data: *const c_void, thread_data: *mut c_void);
 
-#[repr(C)]
-#[allow(non_snake_case)]
-pub struct SCEveFileType {
-    pub name: *const c_char,
-    pub open: InitFn,
-    pub thread_init: ThreadInitFn,
-    pub write: WriteFn,
-    pub thread_deinit: ThreadDeinitFn,
-    pub close: DeinitFn,
-    pad: [usize; 2],
-}
+pub fn new_eve_filetype(
+    name: &str,
+    init: InitFn,
+    deinit: DeinitFn,
+    write: WriteFn,
+    thread_init: ThreadInitFn,
+    thread_deinit: ThreadDeinitFn,
+) -> *mut SCEveFileType {
+    // Convert the name to C and forget.
+    let name = CString::new(name).unwrap().into_raw();
 
-impl SCEveFileType {
-    pub fn new(
-        name: &str,
-        open: InitFn,
-        close: DeinitFn,
-        write: WriteFn,
-        thread_init: ThreadInitFn,
-        thread_deinit: ThreadDeinitFn,
-    ) -> *const Self {
-        // Convert the name to C and forget.
-        let name = CString::new(name).unwrap().into_raw();
-        let file_type = SCEveFileType {
-            name,
-            open,
-            close,
-            write,
-            thread_init,
-            thread_deinit,
-            pad: [0, 0],
-        };
-        Box::into_raw(Box::new(file_type))
-    }
+    let file_type = SCEveFileType {
+        name,
+        Init: Some(init),
+        ThreadInit: Some(thread_init),
+        Write: Some(write),
+        ThreadDeinit: Some(thread_deinit),
+        Deinit: Some(deinit),
+        entries: Default::default(),
+    };
+
+    Box::into_raw(Box::new(file_type))
 }
 
 extern "C" {
-    pub fn SCRegisterEveFileType(filetype: *const SCEveFileType) -> bool;
+    pub fn SCRegisterEveFileType(filetype: *mut SCEveFileType) -> bool;
 }
 
 // Convert a C string with a provided length to a Rust &str.
