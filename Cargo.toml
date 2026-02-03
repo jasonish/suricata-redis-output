@@ -16,6 +16,10 @@ name = "redis_output"
 [dependencies]
 anyhow = "1.0.40"
 redis = {version = "0.25", default-features = false, features = []}
-suricata = { version = "8.0.0" }
-suricata-sys = { version = "8.0.0" }
 url = "= 2.4.0"
+
+#suricata = { version = "8.0.0" }
+#suricata-sys = { version = "8.0.0" }
+
+suricata = { path = "/home/jason/oisf/dev/suricata/suricata-ffi/rust" }
+suricata-sys = { path = "/home/jason/oisf/dev/suricata/suricata-ffi/rust/sys" }
