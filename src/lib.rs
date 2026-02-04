@@ -366,7 +366,7 @@ unsafe extern "C" fn init_plugin() {
         output_thread_init,
         output_thread_deinit,
     );
-    ffi::SCRegisterEveFileType(file_type);
+    suricata_sys::sys::SCRegisterEveFileType(file_type);
 }
 
 #[no_mangle]

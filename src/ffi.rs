@@ -75,10 +75,6 @@ pub fn new_eve_filetype(
     Box::into_raw(Box::new(file_type))
 }
 
-extern "C" {
-    pub fn SCRegisterEveFileType(filetype: *mut SCEveFileType) -> bool;
-}
-
 // Convert a C string with a provided length to a Rust &str.
 //
 // This is an alternative to CStr::from_ptr when the length is already known to avoid the
