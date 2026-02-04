@@ -33,7 +33,7 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use suricata::{SCLogError, SCLogNotice};
+use suricata_ffi::{SCLogError, SCLogNotice};
 use suricata_sys::sys::{
     SCConfNode, SCConfNodeLookupChild, SCConfNodeLookupChildValue, SCPlugin, SC_API_VERSION,
     SC_PACKAGE_VERSION,
@@ -380,7 +380,7 @@ unsafe extern "C" fn output_thread_deinit(_init_data: *const c_void, thread_data
 
 unsafe extern "C" fn init_plugin() {
     let file_type = ffi::new_eve_filetype(
-        "eve-redis-plugin",
+        "plugin:redis",
         output_init,
         output_close,
         output_write,
@@ -392,7 +392,7 @@ unsafe extern "C" fn init_plugin() {
 
 #[no_mangle]
 extern "C" fn SCPluginRegister() -> *const SCPlugin {
-    suricata::plugin::init();
+    suricata_ffi::plugin::init();
 
     let plugin_version =
         CString::new(env!("CARGO_PKG_VERSION")).unwrap().into_raw() as *const c_char;
