@@ -25,7 +25,7 @@
 mod ffi;
 
 use redis::Commands;
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -33,9 +33,28 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
-use suricata::conf::ConfNode;
 use suricata::{SCLogError, SCLogNotice};
-use suricata_sys::sys::{SCConfNode, SCPlugin, SC_API_VERSION, SC_PACKAGE_VERSION};
+use suricata_sys::sys::{
+    SCConfNode, SCConfNodeLookupChild, SCConfNodeLookupChildValue, SCPlugin, SC_API_VERSION,
+    SC_PACKAGE_VERSION,
+};
+
+unsafe fn conf_lookup_child(node: *const SCConfNode, key: &'static [u8]) -> *mut SCConfNode {
+    debug_assert!(key.last() == Some(&0));
+    SCConfNodeLookupChild(node, key.as_ptr() as *const c_char)
+}
+
+unsafe fn conf_lookup_child_value<'a>(
+    node: *const SCConfNode,
+    key: &'static [u8],
+) -> Option<&'a str> {
+    debug_assert!(key.last() == Some(&0));
+    let v = SCConfNodeLookupChildValue(node, key.as_ptr() as *const c_char);
+    if v.is_null() {
+        return None;
+    }
+    CStr::from_ptr(v).to_str().ok()
+}
 
 // Default configuration values.
 const DEFAULT_HOST: &str = "127.0.0.1";
@@ -92,18 +111,16 @@ impl Default for Config {
 }
 
 impl Config {
-    fn new(conf: &ConfNode) -> anyhow::Result<Self> {
-        let server = conf.get_child_value("server").unwrap_or(DEFAULT_HOST);
-        let port = match conf
-            .get_child_value("port")
+    fn new(conf: *const SCConfNode) -> anyhow::Result<Self> {
+        let server = unsafe { conf_lookup_child_value(conf, b"server\0") }.unwrap_or(DEFAULT_HOST);
+        let port = match unsafe { conf_lookup_child_value(conf, b"port\0") }
             .unwrap_or(DEFAULT_PORT)
             .parse::<u16>()
         {
             Ok(port) => port,
             Err(_) => anyhow::bail!("invalid port"),
         };
-        let buffer_size = match conf
-            .get_child_value("buffer-size")
+        let buffer_size = match unsafe { conf_lookup_child_value(conf, b"buffer-size\0") }
             .unwrap_or(DEFAULT_BUFFER_SIZE)
             .parse::<usize>()
         {
@@ -111,8 +128,10 @@ impl Config {
             Err(_) => anyhow::bail!("invalid buffer-size"),
         };
 
-        let key = conf.get_child_value("key").unwrap_or(DEFAULT_KEY);
-        let mode = Mode::from_str(conf.get_child_value("mode").unwrap_or(DEFAULT_MODE))?;
+        let key = unsafe { conf_lookup_child_value(conf, b"key\0") }.unwrap_or(DEFAULT_KEY);
+        let mode = Mode::from_str(
+            unsafe { conf_lookup_child_value(conf, b"mode\0") }.unwrap_or(DEFAULT_MODE),
+        )?;
         let config = Config {
             server: server.into(),
             port,
@@ -279,10 +298,12 @@ unsafe extern "C" fn output_init(
     let config = if conf.is_null() {
         Config::default()
     } else {
-        ConfNode::wrap(conf)
-            .get_child_node("redis")
-            .map(|conf| Config::new(&conf).unwrap())
-            .unwrap_or_default()
+        let redis_conf = unsafe { conf_lookup_child(conf, b"redis\0") };
+        if redis_conf.is_null() {
+            Config::default()
+        } else {
+            Config::new(redis_conf).unwrap_or_default()
+        }
     };
 
     let (tx, rx) = std::sync::mpsc::sync_channel(config.buffer);
