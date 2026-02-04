@@ -22,38 +22,9 @@
 
 /// Helper module for this plugin to provide better interfaces to the C API.
 /// This will become part of the Suricata dependency crate at some point.
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int};
 use std::str::Utf8Error;
-
-use suricata_sys::sys::{
-    SCEveFileType, SCEveFileTypeDeinitFunc, SCEveFileTypeInitFunc, SCEveFileTypeThreadDeinitFunc,
-    SCEveFileTypeThreadInitFunc, SCEveFileTypeWriteFunc,
-};
-
-pub fn new_eve_filetype(
-    name: &str,
-    init: SCEveFileTypeInitFunc,
-    deinit: SCEveFileTypeDeinitFunc,
-    write: SCEveFileTypeWriteFunc,
-    thread_init: SCEveFileTypeThreadInitFunc,
-    thread_deinit: SCEveFileTypeThreadDeinitFunc,
-) -> *mut SCEveFileType {
-    // Convert the name to C and forget.
-    let name = CString::new(name).unwrap().into_raw();
-
-    let file_type = SCEveFileType {
-        name,
-        Init: init,
-        ThreadInit: thread_init,
-        Write: write,
-        ThreadDeinit: thread_deinit,
-        Deinit: deinit,
-        entries: Default::default(),
-    };
-
-    Box::into_raw(Box::new(file_type))
-}
 
 // Convert a C string with a provided length to a Rust &str.
 //

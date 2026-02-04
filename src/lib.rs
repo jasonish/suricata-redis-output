@@ -33,6 +33,7 @@ use std::sync::mpsc::{SyncSender, TrySendError};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use suricata_ffi::eve::EveFileType;
 use suricata_ffi::{SCLogError, SCLogNotice};
 use suricata_sys::sys::{
     SCConfNode, SCConfNodeLookupChild, SCConfNodeLookupChildValue, SCPlugin, SC_API_VERSION,
@@ -379,15 +380,16 @@ unsafe extern "C" fn output_thread_deinit(_init_data: *const c_void, thread_data
 }
 
 unsafe extern "C" fn init_plugin() {
-    let file_type = ffi::new_eve_filetype(
+    let file_type = EveFileType::new(
         "plugin:redis",
         Some(output_init),
         Some(output_close),
         Some(output_write),
         Some(output_thread_init),
         Some(output_thread_deinit),
-    );
-    suricata_sys::sys::SCRegisterEveFileType(file_type);
+    )
+    .unwrap();
+    suricata_ffi::eve::register_file_type(file_type);
 }
 
 #[no_mangle]
