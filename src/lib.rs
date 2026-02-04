@@ -381,11 +381,11 @@ unsafe extern "C" fn output_thread_deinit(_init_data: *const c_void, thread_data
 unsafe extern "C" fn init_plugin() {
     let file_type = ffi::new_eve_filetype(
         "plugin:redis",
-        output_init,
-        output_close,
-        output_write,
-        output_thread_init,
-        output_thread_deinit,
+        Some(output_init),
+        Some(output_close),
+        Some(output_write),
+        Some(output_thread_init),
+        Some(output_thread_deinit),
     );
     suricata_sys::sys::SCRegisterEveFileType(file_type);
 }

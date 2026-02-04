@@ -23,52 +23,32 @@
 /// Helper module for this plugin to provide better interfaces to the C API.
 /// This will become part of the Suricata dependency crate at some point.
 use std::ffi::{CStr, CString};
-use std::os::raw::{c_char, c_int, c_void};
+use std::os::raw::{c_char, c_int};
 use std::str::Utf8Error;
 
-use suricata_sys::sys::{SCConfNode, SCEveFileType, ThreadId};
-
-pub type InitFn = unsafe extern "C" fn(
-    conf: *const SCConfNode,
-    threaded: bool,
-    init_data: *mut *mut c_void,
-) -> c_int;
-
-pub type DeinitFn = unsafe extern "C" fn(init_data: *mut c_void);
-
-pub type WriteFn = unsafe extern "C" fn(
-    buffer: *const c_char,
-    buffer_len: c_int,
-    init_data: *const c_void,
-    thread_data: *mut c_void,
-) -> c_int;
-
-pub type ThreadInitFn = unsafe extern "C" fn(
-    init_data: *const c_void,
-    thread_id: ThreadId,
-    thread_data: *mut *mut c_void,
-) -> c_int;
-
-pub type ThreadDeinitFn = unsafe extern "C" fn(init_data: *const c_void, thread_data: *mut c_void);
+use suricata_sys::sys::{
+    SCEveFileType, SCEveFileTypeDeinitFunc, SCEveFileTypeInitFunc, SCEveFileTypeThreadDeinitFunc,
+    SCEveFileTypeThreadInitFunc, SCEveFileTypeWriteFunc,
+};
 
 pub fn new_eve_filetype(
     name: &str,
-    init: InitFn,
-    deinit: DeinitFn,
-    write: WriteFn,
-    thread_init: ThreadInitFn,
-    thread_deinit: ThreadDeinitFn,
+    init: SCEveFileTypeInitFunc,
+    deinit: SCEveFileTypeDeinitFunc,
+    write: SCEveFileTypeWriteFunc,
+    thread_init: SCEveFileTypeThreadInitFunc,
+    thread_deinit: SCEveFileTypeThreadDeinitFunc,
 ) -> *mut SCEveFileType {
     // Convert the name to C and forget.
     let name = CString::new(name).unwrap().into_raw();
 
     let file_type = SCEveFileType {
         name,
-        Init: Some(init),
-        ThreadInit: Some(thread_init),
-        Write: Some(write),
-        ThreadDeinit: Some(thread_deinit),
-        Deinit: Some(deinit),
+        Init: init,
+        ThreadInit: thread_init,
+        Write: write,
+        ThreadDeinit: thread_deinit,
+        Deinit: deinit,
         entries: Default::default(),
     };
 
