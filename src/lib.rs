@@ -25,7 +25,7 @@
 mod ffi;
 
 use redis::Commands;
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_void};
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,11 +34,9 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use suricata_ffi::eve::EveFileType;
+use suricata_ffi::plugin::Plugin;
 use suricata_ffi::{SCLogError, SCLogNotice};
-use suricata_sys::sys::{
-    SCConfNode, SCConfNodeLookupChild, SCConfNodeLookupChildValue, SCPlugin, SC_API_VERSION,
-    SC_PACKAGE_VERSION,
-};
+use suricata_sys::sys::{SCConfNode, SCConfNodeLookupChild, SCConfNodeLookupChildValue, SCPlugin};
 
 unsafe fn conf_lookup_child(node: *const SCConfNode, key: &'static [u8]) -> *mut SCConfNode {
     debug_assert!(key.last() == Some(&0));
@@ -396,16 +394,12 @@ unsafe extern "C" fn init_plugin() {
 extern "C" fn SCPluginRegister() -> *const SCPlugin {
     suricata_ffi::plugin::init();
 
-    let plugin_version =
-        CString::new(env!("CARGO_PKG_VERSION")).unwrap().into_raw() as *const c_char;
-    let plugin = SCPlugin {
-        version: SC_API_VERSION,
-        suricata_version: SC_PACKAGE_VERSION.as_ptr() as *const c_char,
-        name: b"redis-output\0".as_ptr() as *const c_char,
-        plugin_version,
-        license: b"MIT\0".as_ptr() as *const c_char,
-        author: b"Jason Ish\0".as_ptr() as *const c_char,
-        Init: Some(init_plugin),
-    };
-    Box::into_raw(Box::new(plugin))
+    Plugin {
+        name: "redis-output",
+        version: env!("CARGO_PKG_VERSION"),
+        license: "MIT",
+        author: "Jason Ish",
+        init: init_plugin,
+    }
+    .into_raw()
 }
