@@ -35,7 +35,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 use suricata_ffi::eve::EveFileType;
 use suricata_ffi::plugin::Plugin;
-use suricata_ffi::{SCLogError, SCLogNotice};
+use suricata_ffi::{SCFatalErrorOnInit, SCLogError, SCLogNotice};
 use suricata_sys::sys::{SCConfNode, SCConfNodeLookupChild, SCConfNodeLookupChildValue, SCPlugin};
 
 unsafe fn conf_lookup_child(node: *const SCConfNode, key: &'static [u8]) -> *mut SCConfNode {
@@ -378,16 +378,17 @@ unsafe extern "C" fn output_thread_deinit(_init_data: *const c_void, thread_data
 }
 
 unsafe extern "C" fn init_plugin() {
-    let file_type = EveFileType::new(
-        "plugin:redis",
-        Some(output_init),
-        Some(output_close),
-        Some(output_write),
-        Some(output_thread_init),
-        Some(output_thread_deinit),
-    )
-    .unwrap();
-    suricata_ffi::eve::register_file_type(file_type);
+    let ft = EveFileType {
+        name: "plugin:redis",
+        init: Some(output_init),
+        deinit: Some(output_close),
+        write: Some(output_write),
+        thread_init: Some(output_thread_init),
+        thread_deinit: Some(output_thread_deinit),
+    };
+    if let Err(err) = EveFileType::register(ft) {
+        SCFatalErrorOnInit!("Failed to register Redis EVE output: {err}");
+    }
 }
 
 #[no_mangle]
